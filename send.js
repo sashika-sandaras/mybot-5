@@ -10,6 +10,7 @@ async function startBot() {
     const userJid = process.env.USER_JID;
     const fileId = process.env.FILE_ID;
 
+    // --- Session Setup ---
     if (!fs.existsSync('./auth_info')) fs.mkdirSync('./auth_info');
     if (sessionData && sessionData.startsWith('Gifted~')) {
         try {
@@ -39,18 +40,21 @@ async function startBot() {
     sock.ev.on('connection.update', async (update) => {
         const { connection } = update;
         if (connection === 'open') {
+            console.log('✅ Connected to WhatsApp');
+
             try {
                 await sendMsg("✅ *Request Received...*");
                 await delay(500);
                 await sendMsg("📥 *Download වෙමින් පවතී...*");
 
-                // Google Drive Direct Download via Python & Curl
+                // --- Google Drive Advanced Downloader ---
                 const pyScript = `
 import requests, os, sys, re, subprocess
 
 def get_drive_link(id):
     URL = "https://docs.google.com/uc?export=download"
     session = requests.Session()
+    # Confirm token එක ලබා ගැනීම (ලොකු ෆයිල් සඳහා)
     response = session.get(URL, params={'id': id}, stream=True)
     token = None
     for key, value in response.cookies.items():
@@ -65,20 +69,28 @@ try:
     f_id = "${fileId}"
     d_url = get_drive_link(f_id)
     
-    # Get Filename from headers
+    # Header එකෙන් ෆයිල් එකේ නම හොයා ගැනීම
     r = requests.get(d_url, stream=True)
     d = r.headers.get('content-disposition')
-    fname = re.findall('filename="(.+)"', d)[0] if d else "video.mp4"
+    if d:
+        fname = re.findall('filename="(.+)"', d)[0]
+    else:
+        fname = "video.mp4"
     
-    # Download using curl
-    subprocess.call(f'curl -L -k -o "{fname}" "{d_url}"', shell=True)
-    if os.path.exists(fname):
+    # Curl භාවිතා කර බාගැනීම
+    cmd = f'curl -L -k -o "{fname}" "{d_url}"'
+    subprocess.call(cmd, shell=True)
+    
+    # ෆයිල් එකේ සයිස් එක චෙක් කරනවා (KB 2 ප්‍රශ්නය මගහරින්න)
+    if os.path.exists(fname) and os.path.getsize(fname) > 20480: # 20KB ට වඩා වැඩි නම් පමණක්
         print(fname)
+    else:
+        sys.exit(1)
 except:
     sys.exit(1)
 `;
                 fs.writeFileSync('downloader.py', pyScript);
-                
+
                 let fileName;
                 try {
                     fileName = execSync('python3 downloader.py').toString().trim();
@@ -95,6 +107,7 @@ except:
                 const mime = isSub ? 'text/plain' : (ext === '.mp4' ? 'video/mp4' : 'video/x-matroska');
                 const header = isSub ? "💚 *Subtitles Upload Successfully...*" : "💚 *Video Upload Successfully...*";
 
+                // WhatsApp Document Message
                 await sock.sendMessage(userJid, {
                     document: { url: `./${fileName}` },
                     fileName: fileName,
@@ -104,8 +117,10 @@ except:
 
                 await sendMsg("☺️ *Mflix භාවිතා කළ ඔබට සුභ දවසක්...*\n*කරුණාකර Report කිරීමෙන් වළකින්න...* 💝");
                 
-                fs.unlinkSync(fileName);
-                fs.unlinkSync('downloader.py');
+                // Cleanup
+                if (fs.existsSync(fileName)) fs.unlinkSync(fileName);
+                if (fs.existsSync('downloader.py')) fs.unlinkSync('downloader.py');
+                
                 setTimeout(() => process.exit(0), 5000);
 
             } catch (err) {
