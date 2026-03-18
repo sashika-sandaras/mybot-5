@@ -31,7 +31,8 @@ jobs:
       - name: Install Dependencies
         run: |
           pip install requests gdown
-          npm install @whiskeysockets/baileys pino axios zlib
+          # zlib මෙතනින් අයින් කළා (Node built-in නිසා)
+          npm install @whiskeysockets/baileys pino axios
 
       - name: Run MFlix Engine
         env:
