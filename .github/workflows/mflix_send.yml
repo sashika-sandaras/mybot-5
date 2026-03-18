@@ -1,4 +1,4 @@
-name: Send Movie File (Test)
+name: Send Movie File (Final Fix)
 
 on:
   workflow_dispatch:
@@ -32,7 +32,7 @@ jobs:
       - name: Install Dependencies
         run: |
           pip install requests
-          npm install @whiskeysockets/baileys pino axios qrcode-terminal
+          npm install @whiskeysockets/baileys pino axios
 
       - name: Run Script
         env:
@@ -41,40 +41,61 @@ jobs:
           FILE_ID: ${{ github.event.inputs.file_id }}
           USER_JID: ${{ github.event.inputs.user_jid }}
         run: |
-          # Python Downloader Script
+          # Python Downloader with GDrive Bypass
           cat <<'EOF' > downloader.py
           import os, requests, sys
+
+          def get_confirm_token(response):
+              for key, value in response.cookies.items():
+                  if key.startswith('download_warning'):
+                      return value
+              return None
+
+          def download_file_from_google_drive(id, destination):
+              URL = "https://docs.google.com/uc?export=download"
+              session = requests.Session()
+              response = session.get(URL, params={'id': id}, stream=True)
+              token = get_confirm_token(response)
+
+              if token:
+                  params = {'id': id, 'confirm': token}
+                  response = session.get(URL, params=params, stream=True)
+              
+              save_response_content(response, destination)
+
+          def save_response_content(response, destination):
+              CHUNK_SIZE = 32768
+              with open(destination, "wb") as f:
+                  for chunk in response.iter_content(CHUNK_SIZE):
+                      if chunk: f.write(chunk)
+
           file_id = os.getenv('FILE_ID')
           voe_key = os.getenv('VOE_KEY')
-          url = None
           
-          # Browser එකක් විදිහට පෙනී සිටීමට Headers
-          headers = {
-              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-          }
+          print(f"Starting download for ID: {file_id}")
+          
+          try:
+              if len(file_id) > 20: # GDrive ID detect
+                  download_file_from_google_drive(file_id, 'movie_mflix.mp4')
+              else: # VOE ID detect
+                  api_url = f"https://voe.sx/api/drive/v2/file/info?key={voe_key}&file_code={file_id}"
+                  r = requests.get(api_url).json()
+                  direct_url = r.get('result', {}).get('direct_url')
+                  if direct_url:
+                      r_file = requests.get(direct_url, stream=True)
+                      save_response_content(r_file, 'movie_mflix.mp4')
+                  else:
+                      print("Error: Could not get VOE direct link")
+                      sys.exit(1)
 
-          if len(file_id) > 20: # GDrive
-              url = f"https://drive.google.com/uc?export=download&id={file_id}&confirm=t"
-          else: # VOE
-              api_url = f"https://voe.sx/api/drive/v2/file/info?key={voe_key}&file_code={file_id}"
-              r = requests.get(api_url).json()
-              url = r.get('result', {}).get('direct_url')
-
-          if url:
-              print(f"Downloading from: {url}")
-              with requests.get(url, headers=headers, stream=True, allow_redirects=True) as r:
-                  r.raise_for_status()
-                  with open('movie_mflix.mp4', 'wb') as f:
-                      for chunk in r.iter_content(chunk_size=1024*1024): # 1MB chunks
-                          if chunk: f.write(chunk)
-              
               size = os.path.getsize('movie_mflix.mp4')
               print(f"Download Complete! File Size: {size / (1024*1024):.2f} MB")
-              if size < 50000: # 50KB ට වඩා අඩු නම් ඒක Error එකක්
-                  print("Error: Downloaded file is too small. Probably an error page.")
+              
+              if size < 100000:
+                  print("Error: File is too small. Check permissions or link.")
                   sys.exit(1)
-          else:
-              print("Error: Could not find download URL")
+          except Exception as e:
+              print(f"Critical Error: {e}")
               sys.exit(1)
           EOF
           
