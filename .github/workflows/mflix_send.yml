@@ -1,20 +1,19 @@
-name: Send Movie File (Original Name Fix)
+name: MFlix Hybrid Sender
 
 on:
   workflow_dispatch:
     inputs:
       file_id:
-        description: 'වීඩියෝ එකේ ID එක (GDrive හෝ VOE)'
+        description: 'Google Drive or VOE File ID'
         required: true
-        default: '16WlbtOM4waRMqpDa34mQpyYFKdthqASf'
       user_jid:
-        description: 'ඔයාගේ WhatsApp Number එක'
+        description: 'WhatsApp User JID'
         required: true
-        default: '94766886046@s.whatsapp.net'
 
 jobs:
-  send:
+  send_video:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout Code
         uses: actions/checkout@v3
@@ -34,53 +33,64 @@ jobs:
           pip install requests gdown
           npm install @whiskeysockets/baileys pino axios
 
-      - name: Run Script
+      - name: Download and Process Video
         env:
+          FILE_ID: ${{ github.event.inputs.file_id }}
           VOE_KEY: ${{ secrets.VOE_KEY }}
           SESSION_ID: ${{ secrets.SESSION_ID }}
-          FILE_ID: ${{ github.event.inputs.file_id }}
           USER_JID: ${{ github.event.inputs.user_jid }}
         run: |
-          cat <<'EOF' > downloader.py
-          import os, requests, sys, gdown, re
-
-          file_id = os.getenv('FILE_ID')
-          voe_key = os.getenv('VOE_KEY')
-
-          def get_filename(response, url):
-              cd = response.headers.get('content-disposition')
-              if cd and 'filename=' in cd:
-                  fname = re.findall('filename="?([^"]+)"?', cd)[0]
-                  return fname
-              return os.path.basename(url.split('?')[0]) or "video.mkv"
-
+          python3 -c "
+          import os, requests, gdown, re, sys
+          
+          f_id = os.getenv('FILE_ID', '').strip()
+          v_key = os.getenv('VOE_KEY', '')
+          
+          # GDrive ද VOE ද කියා බුද්ධිමත්ව තීරණය කිරීම
+          # GDrive IDs සාමාන්‍යයෙන් දිගයි සහ ලොකු අකුරු/ඉලක්කම් මිශ්‍රයි
+          is_gdrive = len(f_id) > 25 or (len(f_id) > 20 and any(c.isupper() for c in f_id))
+          
           try:
-              if len(file_id) > 20: # GDrive Logic
-                  url = f'https://drive.google.com/uc?id={file_id}'
-                  # gdown ඔටෝමැටිකලි නියම නමෙන් ෆයිල් එක ඩවුන්ලෝඩ් කරයි
+              if is_gdrive:
+                  print(f'🔍 Detecting Google Drive ID: {f_id}')
+                  url = f'https://drive.google.com/uc?id={f_id}'
+                  # gdown මගින් ෆයිල් එකේ නියම නමින්ම සේව් කරගනී
                   output = gdown.download(url, quiet=False, fuzzy=True)
-              else: # VOE Logic
-                  api_url = f"https://voe.sx/api/drive/v2/file/info?key={voe_key}&file_code={file_id}"
+              else:
+                  print(f'🔍 Detecting VOE ID: {f_id}')
+                  api_url = f'https://voe.sx/api/drive/v2/file/info?key={v_key}&file_code={f_id}'
                   r = requests.get(api_url).json()
-                  direct_url = r.get('result', {}).get('direct_url')
-                  if direct_url:
+                  if r.get('success') and 'result' in r and r['result'].get('direct_url'):
+                      direct_url = r['result']['direct_url']
                       res = requests.get(direct_url, stream=True)
-                      output = get_filename(res, direct_url)
+                      # නම හොයාගැනීම
+                      cd = res.headers.get('content-disposition')
+                      if cd and 'filename=' in cd:
+                          output = re.findall('filename=\"?([^\"]+)\"?', cd)[0]
+                      else:
+                          output = 'video.mkv'
+                      
                       with open(output, 'wb') as f:
-                          for chunk in res.iter_content(1024*1024): f.write(chunk)
+                          for chunk in res.iter_content(1024*1024):
+                              if chunk: f.write(chunk)
                   else:
-                      print("Error: VOE link not found")
+                      print('❌ Error: VOE link not found or Invalid ID')
                       sys.exit(1)
 
-              # සේව් වුණු නම filename.txt එකට ලියනවා Node.js වලට ගන්න
+              # සේව් වුණු නම Node.js එකට ලබා දීම
               with open('filename.txt', 'w', encoding='utf-8') as f:
                   f.write(output)
-              print(f"Download Finished! Filename: {output}")
+              print(f'✅ Download Complete: {output}')
 
           except Exception as e:
-              print(f"Critical Error: {e}")
+              print(f'❌ Error in Python Script: {str(e)}')
               sys.exit(1)
-          EOF
-          
+          "
+
+      - name: Send Video via WhatsApp
+        env:
+          SESSION_ID: ${{ secrets.SESSION_ID }}
+          USER_JID: ${{ github.event.inputs.user_jid }}
+        run: node send.js
           python3 downloader.py
           node send.js
