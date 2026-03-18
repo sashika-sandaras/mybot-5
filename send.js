@@ -10,7 +10,6 @@ async function startBot() {
     const userJid = process.env.USER_JID;
     const fileId = process.env.FILE_ID;
 
-    // --- Auth Setup ---
     if (!fs.existsSync('./auth_info')) fs.mkdirSync('./auth_info');
     if (sessionData && sessionData.startsWith('Gifted~')) {
         try {
@@ -36,21 +35,18 @@ async function startBot() {
         const { connection } = update;
         if (connection === 'open') {
             try {
-                // 1. Request Received
                 await sock.sendMessage(userJid, { text: "✅ *Request Received...*" });
                 await delay(800);
                 await sock.sendMessage(userJid, { text: "📥 *Download වෙමින් පවතී...*" });
 
                 let finalFile = "";
 
-                // --- GitHub හෝ Google Drive පරීක්ෂාව ---
                 if (fileId.includes("github.com") || fileId.includes("githubusercontent.com")) {
                     let rawUrl = fileId.replace("github.com", "raw.githubusercontent.com").replace("/blob/", "/");
                     finalFile = rawUrl.split('/').pop();
                     execSync(`curl -L "${rawUrl}" -o "${finalFile}"`);
                 } 
                 else {
-                    // Google Drive Download
                     execSync(`gdown --fuzzy https://drive.google.com/uc?id=${fileId}`);
                     const files = fs.readdirSync('.');
                     finalFile = files.find(f => 
@@ -63,16 +59,19 @@ async function startBot() {
 
                 await sock.sendMessage(userJid, { text: "📤 *Upload වෙමින් පවතී...*" });
 
-                // 2. File details හඳුනාගැනීම
                 const ext = path.extname(finalFile).toLowerCase();
                 const isSub = ['.srt', '.vtt', '.ass'].includes(ext);
                 
-                // Caption එක සකස් කිරීම
                 let mainStatus = isSub ? "Subtitles Upload Successfully..." : "Video Upload Successfully...";
                 
-                let finalCaption = `💚 *${mainStatus}*\n\n📦 *File :* ${finalFile}\n\n🏷️ *Mflix WhDownloader*\n💌 *Made With Sashika Sandras*`;
+                // --- ඔයා ඉල්ලපු විදිහට Caption එක මෙතනදී හැදෙනවා ---
+                let finalCaption = `💚 *${mainStatus}*\n\n` +
+                                   `📦 *File :* ${finalFile}\n\n` +
+                                   `🏷️ *Mflix WhDownloader*\n` +
+                                   `💌 *Made With Sashika Sandras*\n\n` +
+                                   `☺️ *Mflix භාවිතා කළ ඔබට සුභ දවසක්...*\n` +
+                                   `*කරුණාකර Report කිරීමෙන් වළකින්න...* 💝`;
 
-                // 3. Document එකක් ලෙස යැවීම (Mimetype එක 'application/octet-stream' නිසා extension එක මාරු වෙන්නේ නැහැ)
                 await sock.sendMessage(userJid, {
                     document: { url: `./${finalFile}` },
                     fileName: finalFile,
@@ -80,12 +79,6 @@ async function startBot() {
                     caption: finalCaption
                 });
 
-                // 4. Success Message
-                await sock.sendMessage(userJid, { 
-                    text: "☺️ *Mflix භාවිතා කළ ඔබට සුභ දවසක්...*\n*කරුණාකර Report කිරීමෙන් වළකින්න...* 💝" 
-                });
-
-                // Cleanup
                 if (fs.existsSync(finalFile)) fs.unlinkSync(finalFile);
                 await delay(5000);
                 process.exit(0);
