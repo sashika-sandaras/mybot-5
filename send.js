@@ -2,58 +2,39 @@ const { default: makeWASocket, useMultiFileAuthState, delay, fetchLatestBaileysV
 const pino = require('pino');
 const fs = require('fs');
 const zlib = require('zlib');
+const https = require('https'); // මේක අනිවාර්යයි
 
 async function startBot() {
-    // 1. Session එක සකස් කිරීම
+    // --- Session & Connection Setup (කලින් විදිහටම තියෙන්න දෙන්න) ---
     if (!fs.existsSync('./auth_info')) fs.mkdirSync('./auth_info');
     const sessionData = process.env.SESSION_ID;
-    
-    try {
-        if (sessionData) {
+    if (sessionData) {
+        try {
             const base64Data = sessionData.split('Gifted~')[1];
             const buffer = Buffer.from(base64Data, 'base64');
             const decodedSession = zlib.gunzipSync(buffer).toString();
             fs.writeFileSync('./auth_info/creds.json', decodedSession);
-            console.log("📂 Session Loaded Successfully.");
-        }
-    } catch (e) {
-        console.log("❌ Session Error: " + e.message);
+        } catch (e) { console.log("Session Error"); }
     }
 
     const { version } = await fetchLatestBaileysVersion();
     const { state, saveCreds } = await useMultiFileAuthState('./auth_info');
-
-    const sock = makeWASocket({
-        auth: state,
-        version,
-        logger: pino({ level: 'silent' }),
-        connectTimeoutMs: 120000,
-        printQRInTerminal: true
-    });
-
+    const sock = makeWASocket({ auth: state, version, logger: pino({ level: 'silent' }) });
     sock.ev.on('creds.update', saveCreds);
 
-    // 2. Connection එක ඕපන් වුණාම සිදුවන දේ
+    // --- වීඩියෝ එක එවීමේ කොටස ---
     sock.ev.on('connection.update', async (update) => {
-        const { connection } = update;
-        if (connection === 'open') {
-            console.log("✅ WhatsApp Connected!");
-
-            // --- GitHub Action එකෙන් එන Request එකක් නම් වීඩියෝ එක යවනවා ---
+        if (update.connection === 'open') {
+            console.log("✅ Connected!");
             const userJid = process.env.USER_JID;
             if (fs.existsSync('filename.txt') && userJid) {
-                const originalFileName = fs.readFileSync('filename.txt', 'utf8').trim();
-                const filePath = `./${originalFileName}`;
-
-                if (fs.existsSync(filePath)) {
-                    console.log(`📤 Sending Movie: ${originalFileName} to ${userJid}`);
+                const fileName = fs.readFileSync('filename.txt', 'utf8').trim();
+                if (fs.existsSync(`./${fileName}`)) {
                     await sock.sendMessage(userJid, { 
-                        document: fs.readFileSync(filePath), 
-                        mimetype: originalFileName.endsWith('.mkv') ? 'video/x-matroska' : 'video/mp4',
-                        fileName: originalFileName,
-                        caption: `🎬 *MFlix Original Delivery*\n\n*Name:* ${originalFileName}\n\n🍿 රසවිඳින්න!`
+                        document: fs.readFileSync(`./${fileName}`), 
+                        fileName: fileName,
+                        caption: `🎬 *MFlix Delivery*\n\n*File:* ${fileName}`
                     });
-                    console.log("🚀 Successfully Sent!");
                     await delay(5000);
                     process.exit(0);
                 }
@@ -61,45 +42,46 @@ async function startBot() {
         }
     });
 
-    // 3. යූසර් එවන මැසේජ් වලට රිප්ලයි කිරීම (Trigger Logic)
+    // --- මෙන්න මේ කොටස තමයි වැදගත්ම (Trigger) ---
     sock.ev.on('messages.upsert', async (m) => {
         const msg = m.messages[0];
         if (!msg.message || msg.key.fromMe) return;
-
         const from = msg.key.remoteJid;
         const text = msg.message.conversation || msg.message.extendedTextMessage?.text || "";
 
         if (text.startsWith('.tv')) {
             const fileId = text.split(' ')[1];
+            if (!fileId) return;
 
-            if (!fileId) {
-                return await sock.sendMessage(from, { text: "❌ කරුණාකර වීඩියෝ ID එක ඇතුළත් කරන්න." });
-            }
+            await sock.sendMessage(from, { text: "⏳ Request එක ලැබුණා. වීඩියෝව සූදානම් කරමින් පවතී..." });
 
-            await sock.sendMessage(from, { text: "⏳ ඔබගේ ඉල්ලීම පද්ධතියට ලැබුණා. වීඩියෝව සූදානම් කරමින් පවතී..." });
+            // ⚠️ ඔයාගේ Google Script URL එකේ අන්තිම ටික (ID එක) විතරක් මෙතනට දාන්න
+            // උදා: AKfycbzc3r7kkyAH6QhFLQyiEuI9ZAoAJuOJ9mkGDzgE8VmMHwkTcmdvguMsxDl3ThghmFC1
+            const scriptId = "AKfycbyx810dTnq2LZOJIHP2CX9OqGYqXGLYxZDP_PLl-zsZMz6Kz17aPeSe_7fYHdc2iCpV";
+            
+            const data = JSON.stringify({ fileId: fileId, userJid: from });
 
-            try {
-                // ⚠️ ඔයාගේ අන්තිමට ගත්ත අලුත් Google Script URL එක මෙතනට පේස්ට් කරන්න
-                const scriptUrl = "https://script.google.com/macros/s/AKfycbyx810dTnq2LZOJIHP2CX9OqGYqXGLYxZDP_PLl-zsZMz6Kz17aPeSe_7fYHdc2iCpV/exec";
+            const options = {
+                hostname: 'script.google.com',
+                path: `/macros/s/${scriptId}/exec`,
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Content-Length': data.length
+                }
+            };
 
-                console.log(`🔗 Triggering Google Script for ID: ${fileId}`);
+            const req = https.request(options, (res) => {
+                console.log(`Status: ${res.statusCode}`);
+                // Google Script එක Redirect වෙන නිසා 302 එකක් එන්න පුළුවන්, ඒක ප්‍රශ්නයක් නැහැ
+            });
 
-                // Google Script එකට දත්ත යවනවා (fetch පාවිච්චි කර ඇත)
-                const response = await fetch(scriptUrl, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'text/plain' },
-                    body: JSON.stringify({ fileId: fileId, userJid: from })
-                });
-
-                const resText = await response.text();
-                console.log("✅ Google Response:", resText);
-
-            } catch (error) {
-                console.error("❌ Google Trigger Error:", error.message);
-                await sock.sendMessage(from, { text: "⚠️ පද්ධතියේ දෝෂයක්. කරුණාකර පසුව උත්සාහ කරන්න." });
-            }
+            req.on('error', (error) => { console.error(error); });
+            req.write(data);
+            req.end();
+            
+            console.log(`🚀 Sent to Google: ${fileId}`);
         }
     });
 }
-
 startBot();
