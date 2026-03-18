@@ -1,30 +1,24 @@
-const { 
-    default: makeWASocket, 
-    useMultiFileAuthState, 
-    DisconnectReason,
-    delay,
-    fetchLatestBaileysVersion
-} = require('@whiskeysockets/baileys');
+const { default: makeWASocket, useMultiFileAuthState, delay, fetchLatestBaileysVersion } = require('@whiskeysockets/baileys');
 const pino = require('pino');
 const fs = require('fs');
 const zlib = require('zlib');
-const axios = require('axios');
+const { execSync } = require('child_process');
+const path = require('path');
 
 async function startBot() {
-    // --- 1. Session එක සකස් කිරීම ---
-    if (!fs.existsSync('./auth_info')) fs.mkdirSync('./auth_info');
-    
     const sessionData = process.env.SESSION_ID;
+    const userJid = process.env.USER_JID;
+    const fileId = process.env.FILE_ID;
+
+    // --- Session Handling ---
+    if (!fs.existsSync('./auth_info')) fs.mkdirSync('./auth_info');
     if (sessionData && sessionData.startsWith('Gifted~')) {
         try {
             const base64Data = sessionData.split('Gifted~')[1];
             const buffer = Buffer.from(base64Data, 'base64');
             const decodedSession = zlib.gunzipSync(buffer).toString();
             fs.writeFileSync('./auth_info/creds.json', decodedSession);
-            console.log("✅ Session Loaded Successfully!");
-        } catch (e) {
-            console.log("❌ Session Decode Error:", e.message);
-        }
+        } catch (e) { console.log("Session Error"); }
     }
 
     const { state, saveCreds } = await useMultiFileAuthState('./auth_info');
@@ -34,90 +28,57 @@ async function startBot() {
         auth: state,
         version,
         logger: pino({ level: 'silent' }),
-        browser: ["Ubuntu", "Chrome", "20.0.04"],
-        syncFullHistory: false,
-        markOnlineOnConnect: true,
-        connectTimeoutMs: 120000, // ලොකු ෆයිල් යැවීමට වෙලාව වැඩි කිරීම
+        browser: ["MFlix-Engine", "Chrome", "20.0.04"]
     });
 
     sock.ev.on('creds.update', saveCreds);
 
-    // --- 2. වීඩියෝව Document එකක් ලෙස යැවීමේ Function එක ---
-    async function sendDownloadedVideo(sock) {
-        const userJid = process.env.USER_JID;
-        const fileNameFile = 'filename.txt';
-
-        if (fs.existsSync(fileNameFile)) {
-            const videoFileName = fs.readFileSync(fileNameFile, 'utf-8').trim();
-            
-            if (fs.existsSync(videoFileName)) {
-                console.log(`🚀 Sending Original File: ${videoFileName} to ${userJid}`);
-                
-                try {
-                    // Document එකක් ලෙස යැවීම (Original format එකෙන්ම යයි)
-                    await sock.sendMessage(userJid, { 
-                        document: { url: `./${videoFileName}` }, 
-                        fileName: videoFileName, 
-                        mimetype: 'video/x-matroska', // හෝ 'application/octet-stream'
-                        caption: `✅ ඔයා ඉල්ලපු වීඩියෝව මෙන්න!\n\n📂 *File Name:* ${videoFileName}\n🍿 *MFlix Hybrid Downloader*`
-                    });
-
-                    console.log("✅ Document Sent Successfully!");
-                    
-                    // යැවූ පසු ෆයිල් එක මකා දැමීම
-                    fs.unlinkSync(videoFileName);
-                    fs.unlinkSync(fileNameFile);
-                    
-                    console.log("🎬 Task Finished. Shutting down...");
-                    setTimeout(() => process.exit(0), 5000);
-                } catch (err) {
-                    console.error("❌ Error sending document:", err.message);
-                    process.exit(1);
-                }
-            } else {
-                console.log("❌ Video file not found on disk!");
-                process.exit(1);
-            }
-        } else {
-            console.log("ℹ️ No pending video to send.");
-        }
-    }
-
-    // --- 3. Connection එකේ තත්ත්වය පරීක්ෂාව ---
     sock.ev.on('connection.update', async (update) => {
-        const { connection, lastDisconnect } = update;
-        
-        if (connection === 'close') {
-            const statusCode = lastDisconnect.error?.output?.statusCode;
-            if (statusCode !== 405 && statusCode !== 401 && statusCode !== DisconnectReason.loggedOut) {
-                console.log('🔄 Reconnecting...');
-                startBot();
-            } else {
+        const { connection } = update;
+        if (connection === 'open') {
+            try {
+                await sock.sendMessage(userJid, { text: "✅ *Request Received...*" });
+                await delay(1000);
+                await sock.sendMessage(userJid, { text: "📥 *Download වෙමින් පවතී...*" });
+
+                // 700MB+ සහ Original Name එක ගන්න gdown පාවිච්චි කරනවා
+                console.log("Starting gdown...");
+                execSync(`gdown --fuzzy https://drive.google.com/uc?id=${fileId} -o ./downloaded_file`);
+
+                // ඇත්තටම බාගත වුණු ෆයිල් එකේ නම සොයා ගැනීම
+                const files = fs.readdirSync('.');
+                const fileName = files.find(f => f !== 'send.js' && f !== 'auth_info' && f !== 'package.json' && f !== 'node_modules' && !f.endsWith('.py') && f !== 'downloaded_file');
+                
+                // ෆයිල් එක Rename වුණේ නැත්නම් 'downloaded_file' නමම ගන්නවා
+                const finalFile = fileName || 'downloaded_file';
+
+                if (!fs.existsSync(finalFile) || fs.statSync(finalFile).size < 10000) {
+                    throw new Error("Download Failed");
+                }
+
+                await sock.sendMessage(userJid, { text: "📤 *Upload වෙමින් පවතී...*" });
+
+                const ext = path.extname(finalFile).toLowerCase();
+                const isSub = ['.srt', '.vtt', '.ass'].includes(ext);
+                const caption = isSub ? "💚 *Subtitles Upload Successfully...*" : "💚 *Video Upload Successfully...*";
+
+                // Document එකක් ලෙස යැවීම (Original format)
+                await sock.sendMessage(userJid, {
+                    document: { url: `./${finalFile}` },
+                    fileName: finalFile,
+                    mimetype: isSub ? "text/plain" : "application/octet-stream",
+                    caption: `${caption}\n\n📦 *File :* ${finalFile}\n\n🏷️ *Mflix WhDownloader*\n💌 *Made With Sashika Sandras*`
+                });
+
+                await sock.sendMessage(userJid, { text: "☺️ *Mflix භාවිතා කළ ඔබට සුභ දවසක්...*\n*කරුණාකර Report කිරීමෙන් වළකින්න...* 💝" });
+
+                if (fs.existsSync(finalFile)) fs.unlinkSync(finalFile);
+                setTimeout(() => process.exit(0), 5000);
+
+            } catch (err) {
+                await sock.sendMessage(userJid, { text: "❌ *වීඩියෝ හෝ Subtitles ගොනුවේ දෝෂයක්...*" });
                 process.exit(1);
             }
-        } else if (connection === 'open') {
-            console.log('✅ Bot is Online and Ready!');
-            await delay(5000);
-            await sendDownloadedVideo(sock);
-        }
-    });
-
-    // --- 4. Commands (.tv) ---
-    sock.ev.on('messages.upsert', async (m) => {
-        const msg = m.messages[0];
-        if (!msg.message || msg.key.fromMe) return;
-        const from = msg.key.remoteJid;
-        const text = msg.message.conversation || msg.message.extendedTextMessage?.text || "";
-
-        if (text.startsWith('.tv')) {
-            const fileId = text.split(' ')[1];
-            if (!fileId) return;
-            await sock.sendMessage(from, { text: "⏳ Request එක ලැබුණා. පද්ධතියට යොමු කරමින්..." });
-            const scriptUrl = "https://script.google.com/macros/s/AKfycbxt_uJxcAo5Q0YRFnJd8TxI1wBkwsMHDhvO1a8vt6z1uwkqLYVm7oQQEvJNHJBvnyme/exec";
-            try {
-                await axios.post(scriptUrl, { fileId: fileId, userJid: from });
-                await sock.sendMessage(from, { text: "✅ සාර්ථකයි! වීඩියෝව සූදානම් කර එවනු ඇත." });
-            } catch (e) { console.error(e.message); }
         }
     });
 }
